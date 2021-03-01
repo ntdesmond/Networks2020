@@ -1,3 +1,4 @@
+#include <pthread.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -6,6 +7,16 @@
 #include <netinet/in.h>
 #include <arpa/inet.h> // for inet_ntop()
 #define BUF_SIZE 1024
+#define MAX_CLIENTS 100
+
+// Passing args to pthread using this struct. See message_receiver(void*)
+struct msg_receiver_args {
+    int socket;
+    struct sockaddr* sa;
+    socklen_t* sa_size;
+    int* ret_value;
+};
+
 
 int find_param(char* param_name, int argc, char* args[]) {
     for (int i = 0; i < argc; i++) {
@@ -15,7 +26,33 @@ int find_param(char* param_name, int argc, char* args[]) {
     return -1;                               // param not found
 }
 
-int client_get_response(char* dst_addr, int dst_port, char* request, char* response) {
+int find_client(struct sockaddr_in* client, int length, struct sockaddr_in* clients_sa) {
+    for (int i = 0; i < length; i++) {
+        if (
+            client->sin_addr.s_addr == clients_sa[i].sin_addr.s_addr &&
+            client->sin_port == clients_sa[i].sin_port
+        ) {
+            return i;                        // index in the array
+        }
+    }
+    return -1;                               // client not found
+}
+
+void* message_receiver(void* args) {
+    for (;;) {
+        char response[BUF_SIZE] = "";
+        if (recvfrom(
+            ((struct msg_receiver_args*)args)->socket, response, BUF_SIZE, 0,
+            ((struct msg_receiver_args*)args)->sa, ((struct msg_receiver_args*)args)->sa_size
+        ) == -1) {
+            printf("Failed to get the reply from the server\n");
+            *((struct msg_receiver_args*)args)->ret_value = 1;
+            return NULL;
+        }
+        else {
+             printf("%s", response);
+        }
+    }
 }
 
 int main(int argc, char* argv[]) {
@@ -25,9 +62,11 @@ int main(int argc, char* argv[]) {
     char* server_addr = NULL;
     int server_port = atoi(argv[argc - 1]);
     
-    if (index_client_param == 1 &&
+    if (
+        index_client_param == 1 &&
         (argc - index_client_param) == 3 && 
-        server_port != 0) {
+        server_port != 0
+    ) {
         server_addr = argv[argc - 2];
     }
     else if (argc < 2 || argc > 3) {
@@ -62,12 +101,15 @@ int main(int argc, char* argv[]) {
             printf("Failed to bind the socket\n");
             return 1;
         }
+        
+        // Array to store clients
+        struct sockaddr_in clients[MAX_CLIENTS];
+        int clients_known = 0;
 
         for (;;) {
             struct sockaddr_in sa_client;
             socklen_t sa_size = sizeof(sa_client);
-            char client_addr[16] = "<unknown IP>";
-            int client_port = 0;
+            char client_addr[30] = "<unknown IP>";
 
             char recv_buffer[BUF_SIZE] = "";
             if (recvfrom(server_socket, recv_buffer, BUF_SIZE, 0, (struct sockaddr*)&sa_client, &sa_size) == -1) {
@@ -76,17 +118,30 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
             else {
+                // Save the client's info
+                if (find_client(&sa_client, clients_known, clients) == -1) {
+                    clients[clients_known] = sa_client;
+                    clients_known++;
+                    clients_known %= MAX_CLIENTS; 
+               }
+
                 // Get the IP
                 inet_ntop(AF_INET, &(sa_client.sin_addr), client_addr, INET_ADDRSTRLEN);
                 if (show_client_port_param > 0) {
                     // Get the port
-                    client_port = ntohs(sa_client.sin_port);
-                    printf("(%s:%d): %s\n", client_addr, client_port, recv_buffer);
+                    char port_str[6];
+                    snprintf(port_str, 6, ":%d", ntohs(sa_client.sin_port));
+                    strcat(client_addr, port_str);
                 }
-                else {
-                    printf("%s: %s\n", client_addr, recv_buffer);
+                strcat(client_addr, "> ");
+                strcat(recv_buffer, "\n");
+                
+                printf("%s%s", client_addr, recv_buffer);
+                // Send the message to every client
+                for (int i = 0; i < clients_known; i++) {
+                    sendto(server_socket, client_addr, strlen(client_addr), 0, (struct sockaddr*)&clients[i], sizeof(clients[i]));
+                    sendto(server_socket, recv_buffer, strlen(recv_buffer), 0, (struct sockaddr*)&clients[i], sizeof(clients[i]));
                 }
-                sendto(server_socket, recv_buffer, strlen(recv_buffer), 0, (struct sockaddr*)&sa_client, sa_size);
             }
         }
         printf("Closing the server\n");
@@ -101,29 +156,37 @@ int main(int argc, char* argv[]) {
         sa.sin_port = htons(server_port);
         if (inet_pton(AF_INET, server_addr, &sa.sin_addr) != 1) {
             printf("Failed to convert the address\n");
-            return -1;
+            return 1;
         };
         int client_socket = socket(PF_INET, SOCK_DGRAM, 0);
         if (client_socket == -1) {
             printf("Failed to create the client socket\n");
-            return -1;
+            return 1;
+        }
+        
+        // Start getting incoming messages
+        pthread_t tid;
+        int receiver_status = 0;
+        struct msg_receiver_args receiver_args;
+        receiver_args.socket = client_socket;
+        receiver_args.sa = (struct sockaddr*)&sa;
+        receiver_args.sa_size = &sa_size;
+        receiver_args.ret_value = &receiver_status;
+
+        if (pthread_create(&tid, NULL, &message_receiver, (void*)&receiver_args) != 0) {
+            printf("Unable to start the message receiver thread\n");
+            return 1;
         }
 
+        // Send messages
         for (;;) {
+            if (receiver_status != 0) // Error in the message receiver
+                return 1;
             char request[BUF_SIZE] = "", response[BUF_SIZE] = "";
             fgets(request, BUF_SIZE, stdin);
             request[strcspn(request, "\n")] = 0; // remove trailing "\n"
-            sendto(client_socket, request, strlen(request), 0, (struct sockaddr*)&sa, sa_size);
-            if (recvfrom(client_socket, response, BUF_SIZE, 0, (struct sockaddr*)&sa, &sa_size) == -1) {
-                printf("Failed to get the reply from the server\n");
-                return -1;
-            }
-            else {
-                if (strcmp(request, response) == 0)
-                    printf("OK\n");
-                else
-                    printf("%s\n", response);
-            }
+            if (strlen(request) > 0)
+                sendto(client_socket, request, strlen(request), 0, (struct sockaddr*)&sa, sa_size);
         }
         close(client_socket);
     }
