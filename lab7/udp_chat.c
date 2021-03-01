@@ -20,18 +20,23 @@ int client_get_response(char* dst_addr, int dst_port, char* request, char* respo
 
 int main(int argc, char* argv[]) {
     int index_client_param = find_param("-c", argc, argv);
+    int show_client_port_param = find_param("-vp", argc, argv);
 
-    char* server_addr = NULL, *forward_addr = NULL;
-    int server_port = atoi(argv[argc - 1]), forward_port = 0;
+    char* server_addr = NULL;
+    int server_port = atoi(argv[argc - 1]);
     
-    if (index_client_param == 1 && argc == 4 && server_port != 0) {
-        server_addr = argv[2];
+    if (index_client_param == 1 &&
+        (argc - index_client_param) == 3 && 
+        server_port != 0) {
+        server_addr = argv[argc - 2];
     }
-    else if (argc != 2) {
-        printf("Usage: %s [-c ADDRESS | -f ADDRESS PORT] PORT\n\n", argv[0]);
+    else if (argc < 2 || argc > 3) {
+        printf("Usage: %s [-vp] [-c ADDRESS] PORT\n\n", argv[0]);
+        printf("\t-vp\tShow client's port in the output\n");
+        printf("\t\tWorks only while configuring the server.\n\n");
         printf("\t-c\tEnable client mode, connecting to server on ADDRESS\n");
-        printf("\t\tIf not specified, current instance will be the server.\n");
-        printf("\tADDRESS\tthe server's address to connect/forward to)\n");
+        printf("\t\tIf not specified, current instance will be the server.\n\n");
+        printf("\tADDRESS\tthe server's address to connect to)\n");
         printf("\t\tAddress must be in the IPv4 format (xxx.xxx.xxx.xxx).\n\n");
         printf("\tPORT\tthe port to connect/forward to or to listen on (in server mode)\n");
         printf("\t\tValue must be in range 1-65535\n");
@@ -73,9 +78,14 @@ int main(int argc, char* argv[]) {
             else {
                 // Get the IP
                 inet_ntop(AF_INET, &(sa_client.sin_addr), client_addr, INET_ADDRSTRLEN);
-                // Get the port
-                client_port = ntohs(sa_client.sin_port);
-                printf("(%s:%d): %s\n", client_addr, client_port, recv_buffer);
+                if (show_client_port_param > 0) {
+                    // Get the port
+                    client_port = ntohs(sa_client.sin_port);
+                    printf("(%s:%d): %s\n", client_addr, client_port, recv_buffer);
+                }
+                else {
+                    printf("%s: %s\n", client_addr, recv_buffer);
+                }
                 sendto(server_socket, recv_buffer, strlen(recv_buffer), 0, (struct sockaddr*)&sa_client, sa_size);
             }
         }
@@ -102,7 +112,7 @@ int main(int argc, char* argv[]) {
         for (;;) {
             char request[BUF_SIZE] = "", response[BUF_SIZE] = "";
             fgets(request, BUF_SIZE, stdin);
-
+            request[strcspn(request, "\n")] = 0; // remove trailing "\n"
             sendto(client_socket, request, strlen(request), 0, (struct sockaddr*)&sa, sa_size);
             if (recvfrom(client_socket, response, BUF_SIZE, 0, (struct sockaddr*)&sa, &sa_size) == -1) {
                 printf("Failed to get the reply from the server\n");
