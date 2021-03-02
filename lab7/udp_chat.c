@@ -8,8 +8,9 @@
 #include <arpa/inet.h> // for inet_ntop()
 #define BUF_SIZE 1000
 #define MAX_CLIENTS 100
-#define ADDR_LEN 24 // len("xxx.xxx.xxx.xxx:nnnnn > ")
+#define ADDR_LEN 21 // len("xxx.xxx.xxx.xxx:nnnnn")
 
+const char hello_msg[] =  "/join";
 const char prompt[] =  "chat> ";
 
 // Passing args to pthread using this struct. See message_receiver(void*)
@@ -66,29 +67,33 @@ void* message_receiver(void* args) {
 
 int main(int argc, char* argv[]) {
     int index_client_param = find_param("-c", argc, argv);
+    int quiet_mode_param = find_param("-q", argc, argv);
     int show_client_port_param = find_param("-vp", argc, argv);
 
     char* server_addr = NULL;
     int server_port = atoi(argv[argc - 1]);
     
     if (
-        index_client_param == 1 &&
-        (argc - index_client_param) == 3 && 
-        server_port != 0
+        index_client_param > 0 && (show_client_port_param > 0 || (argc - index_client_param) != 3) || 
+        server_port < 1 || server_port > 65535 || argc < 2 || argc > 5
     ) {
-        server_addr = argv[argc - 2];
-    }
-    else if (argc < 2 || argc > 3) {
-        printf("Usage: %s [-vp] [-c ADDRESS] PORT\n\n", argv[0]);
-        printf("\t-vp\tShow client's port in the output\n");
-        printf("\t\tWorks only while configuring the server.\n\n");
+        printf("Usage: %s [-vp] [-q] [-c ADDRESS] PORT\n\n", argv[0]);
+        printf("\tServer mode options:\n");
+        printf("\t-vp\tShow client's port together with IP address\n");
+        printf("\t-q\tDo not react to 'hello' messages (just skip them)\n\n");
+        printf("\tClient mode options:\n");
         printf("\t-c\tEnable client mode, connecting to server on ADDRESS\n");
-        printf("\t\tIf not specified, current instance will be the server.\n\n");
+        printf("\t\tIf not specified, current instance will be the server.\n");
+        printf("\t-q\tDo not send a 'hello' message at the start\n");
+        printf("\t\tNote: you'll not receive messages unless you send your first message.\n\n");
         printf("\tADDRESS\tthe server's address to connect to)\n");
         printf("\t\tAddress must be in the IPv4 format (xxx.xxx.xxx.xxx).\n\n");
-        printf("\tPORT\tthe port to connect/forward to or to listen on (in server mode)\n");
+        printf("\tPORT\tthe port to connect to or to listen on (in server mode)\n");
         printf("\t\tValue must be in range 1-65535\n");
         return 1;
+    }
+    if (index_client_param > 0) {      // client-mode => extract address
+        server_addr = argv[argc - 2];
     }
 
     if (server_addr == NULL) {
@@ -140,11 +145,21 @@ int main(int argc, char* argv[]) {
                     // Get the port (snprintf for quick int to str conversion)
                     snprintf(client_addr+strlen(client_addr), 6, ":%d", ntohs(sa_client.sin_port));
                 }
-                strcat(client_addr, "> ");
-                
+
                 char send_buffer[ADDR_LEN + BUF_SIZE] = "";
-                strcat(send_buffer, client_addr);
-                strcat(send_buffer, recv_buffer);
+
+                if (strcmp(recv_buffer, hello_msg) == 0) {        // 'hello' message handling
+                    if (quiet_mode_param > 0)                     // ignore it if '-q' is set
+                        continue;
+                    strcat(send_buffer, "INFO> ");
+                    strcat(send_buffer, client_addr);
+                    strcat(send_buffer, " joined the chat");
+                }
+                else {
+                    strcat(send_buffer, client_addr);
+                    strcat(send_buffer, "> ");
+                    strcat(send_buffer, recv_buffer);
+                }
                 printf("%s\n", send_buffer);
                 // Send the message to every client
                 for (int i = 0; i < clients_known; i++) {
@@ -156,7 +171,7 @@ int main(int argc, char* argv[]) {
         close(server_socket);
     }
     else {
-        printf("Client mode; server == %s:%d\n\n%s", server_addr, server_port, prompt);
+        printf("Client mode; server == %s:%d\n\n", server_addr, server_port);
 
         struct sockaddr_in sa;
         socklen_t sa_size = sizeof(sa);
@@ -188,6 +203,12 @@ int main(int argc, char* argv[]) {
             printf("Unable to start the message receiver thread\n");
             return 1;
         }
+
+        // 'hello' message (if not disabled)
+        if (quiet_mode_param == -1) {
+            sendto(client_socket, hello_msg, strlen(hello_msg), 0, (struct sockaddr*)&sa, sa_size);
+        }
+        printf("%s", prompt);
 
         // Send messages
         system("stty -icanon min 1");                              // to read stdin without waiting for '\n'
