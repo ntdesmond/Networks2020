@@ -12,7 +12,7 @@
 #define ADDR_LEN 21 // len("xxx.xxx.xxx.xxx:nnnnn")
 
 const char hello_msg[] =  "/join";
-const char prompt[] =  "chat> ";
+char prompt[] =  "chat> ";          // not const since might be disabled (set to "")
 
 // Passing args to pthread using this struct. See message_receiver(void*)
 struct msg_receiver_args {
@@ -203,10 +203,13 @@ int main(int argc, char* argv[]) {
         }
 
         char request[BUF_SIZE] = "", response[BUF_SIZE] = "";
-        
+        int receiver_status = 0;
+
+        if (system("[[ $- == *i* ]] && stty -icanon min 1") != 0)  // to read stdin without waiting for '\n'
+            strcpy(prompt, "");                                    // Disable prompt for non-interactive mode
+
         // Start getting incoming messages
         pthread_t tid;
-        int receiver_status = 0;
         struct msg_receiver_args receiver_args;
         receiver_args.socket = client_socket;
         receiver_args.sa = (struct sockaddr*)&sa;
@@ -219,6 +222,7 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
+
         // 'hello' message (if not disabled)
         if (quiet_mode_param == -1) {
             sendto(client_socket, hello_msg, strlen(hello_msg), 0, (struct sockaddr*)&sa, sa_size);
@@ -226,20 +230,23 @@ int main(int argc, char* argv[]) {
         printf("%s", prompt);
 
         // Send messages
-        system("stty -icanon min 1");                              // to read stdin without waiting for '\n'
         for (;;) {
-            if (receiver_status != 0) // Error in the message receiver
+            if (receiver_status != 0)    // Error in the message receiver
                 return 1;
-            memset(request, 0, strlen(request));                   // Clean the message
+            memset(request, 0, strlen(request));           // Clean the message
+            char c;
             while (strlen(request) < BUF_SIZE && request[strlen(request) - 1] != '\n') {
-                char c = getchar();                                // Read char by char from stdin
-                if (c == 8 || c == 127) {                          // backspace or del character (yes, now this is our burden)
+                c = getchar();                             // Read char by char from stdin
+                if (c == -1) {
+                    break;
+                }
+                else if (c == 8 || c == 127) {             // backspace or del character (yes, now this is our burden)
                     if (strlen(request) > 0) {
-                        printf("\b\b\b   \b\b\b");                 // erase "C^?" (replace char C with a space)
-                        request[strlen(request) - 1] = 0;          // remove the last character from the string
+                        printf("\b\b\b   \b\b\b");         // erase "C^?" (replace char C with a space)
+                        request[strlen(request) - 1] = 0;  // remove the last character from the string
                     }
                     else {
-                        printf("\b\b  \b\b");                      // erase "^?" only
+                        printf("\b\b  \b\b");              // erase "^?" only
                     } 
                 }
                 else {
