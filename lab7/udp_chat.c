@@ -1,3 +1,4 @@
+
 #include <pthread.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -69,6 +70,7 @@ int main(int argc, char* argv[]) {
     int index_client_param = find_param("-c", argc, argv);
     int quiet_mode_param = find_param("-q", argc, argv);
     int show_client_port_param = find_param("-vp", argc, argv);
+    int keep_newlines_param = find_param("-kn", argc, argv);
 
     char* server_addr = NULL;
     int server_port = atoi(argv[argc - 1]);
@@ -80,6 +82,7 @@ int main(int argc, char* argv[]) {
         printf("Usage: %s [-vp] [-q] [-c ADDRESS] PORT\n\n", argv[0]);
         printf("\tServer mode options:\n");
         printf("\t-vp\tShow client's port together with IP address\n");
+        printf("\t-kn\tKeep newlines in the messages (by default, incoming messages are split by \\n)\n");
         printf("\t-q\tDo not react to 'hello' messages (just skip them)\n\n");
         printf("\tClient mode options:\n");
         printf("\t-c\tEnable client mode, connecting to server on ADDRESS\n");
@@ -131,40 +134,52 @@ int main(int argc, char* argv[]) {
                 close(server_socket);
                 return 1;
             }
+
+            // Save the client's info
+            if (find_client(&sa_client, clients_known, clients) == -1) {
+                clients[clients_known] = sa_client;
+                clients_known++;
+                clients_known %= MAX_CLIENTS; 
+            }
+
+            // Get the IP
+            inet_ntop(AF_INET, &(sa_client.sin_addr), client_addr, INET_ADDRSTRLEN);
+            if (show_client_port_param > 0) {
+                // Get the port (snprintf for quick int to str conversion)
+                snprintf(client_addr+strlen(client_addr), 6, ":%d", ntohs(sa_client.sin_port));
+            }
+
+            char send_buffer[ADDR_LEN + BUF_SIZE] = "";
+
+            if (strcmp(recv_buffer, hello_msg) == 0) {        // 'hello' message handling
+                if (quiet_mode_param > 0)                     // ignore it if '-q' is set
+                    continue;
+                strcat(send_buffer, "INFO> ");
+                strcat(send_buffer, client_addr);
+                strcat(send_buffer, " joined the chat");
+            }
             else {
-                // Save the client's info
-                if (find_client(&sa_client, clients_known, clients) == -1) {
-                    clients[clients_known] = sa_client;
-                    clients_known++;
-                    clients_known %= MAX_CLIENTS; 
-               }
-
-                // Get the IP
-                inet_ntop(AF_INET, &(sa_client.sin_addr), client_addr, INET_ADDRSTRLEN);
-                if (show_client_port_param > 0) {
-                    // Get the port (snprintf for quick int to str conversion)
-                    snprintf(client_addr+strlen(client_addr), 6, ":%d", ntohs(sa_client.sin_port));
-                }
-
-                char send_buffer[ADDR_LEN + BUF_SIZE] = "";
-
-                if (strcmp(recv_buffer, hello_msg) == 0) {        // 'hello' message handling
-                    if (quiet_mode_param > 0)                     // ignore it if '-q' is set
-                        continue;
-                    strcat(send_buffer, "INFO> ");
-                    strcat(send_buffer, client_addr);
-                    strcat(send_buffer, " joined the chat");
-                }
-                else {
+                if (keep_newlines_param > 0) {
                     strcat(send_buffer, client_addr);
                     strcat(send_buffer, "> ");
                     strcat(send_buffer, recv_buffer);
                 }
-                printf("%s\n", send_buffer);
-                // Send the message to every client
-                for (int i = 0; i < clients_known; i++) {
-                    sendto(server_socket, send_buffer, strlen(send_buffer), 0, (struct sockaddr*)&clients[i], sizeof(clients[i]));
+                else {
+                    char* line = strtok(recv_buffer, "\n");
+                     while (line != NULL) {
+                        strcat(send_buffer, client_addr);
+                        strcat(send_buffer, "> ");
+                        strcat(send_buffer, line);                       
+                        line = strtok(NULL, "\n");
+                        if (line != NULL)                   // Add '\n' after all lines except the last one
+                            strcat(send_buffer, "\n");                        
+                    }
                 }
+            }
+            printf("%s\n", send_buffer);
+            // Send the message to every client
+            for (int i = 0; i < clients_known; i++) {
+                sendto(server_socket, send_buffer, strlen(send_buffer), 0, (struct sockaddr*)&clients[i], sizeof(clients[i]));
             }
         }
         printf("Closing the server\n");
